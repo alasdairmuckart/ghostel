@@ -2578,9 +2578,12 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
 
 (ert-deftest ghostel-test-url-detection ()
   "Test automatic URL detection in plain text."
+  ;; Test buffers add a trailing newline so point lands on an empty line
+  ;; below the test content; the cursor-row skip in `ghostel--detect-urls'
+  ;; then leaves the test content untouched.
   ;; Basic URL detection
   (with-temp-buffer
-    (insert "Visit https://example.com for info")
+    (insert "Visit https://example.com for info\n")
     (let ((ghostel-enable-url-detection t))
       (ghostel--detect-urls))
     (should (equal "https://example.com"                   ; url help-echo
@@ -2589,13 +2592,13 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
     (should (get-text-property 7 'keymap)))                ; url keymap
   ;; Disabled detection
   (with-temp-buffer
-    (insert "Visit https://example.com for info")
+    (insert "Visit https://example.com for info\n")
     (let ((ghostel-enable-url-detection nil))
       (ghostel--detect-urls))
     (should (null (get-text-property 7 'help-echo))))      ; url detection disabled
   ;; Skips existing OSC 8 links (help-echo is the native handler function symbol)
   (with-temp-buffer
-    (insert "Visit https://other.com for info")
+    (insert "Visit https://other.com for info\n")
     (put-text-property 7 26 'help-echo #'ghostel--native-link-help-echo)
     (let ((ghostel-enable-url-detection t))
       (ghostel--detect-urls))
@@ -2603,7 +2606,7 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
                 (get-text-property 7 'help-echo))))
   ;; URL not ending in punctuation
   (with-temp-buffer
-    (insert "See https://example.com/path.")
+    (insert "See https://example.com/path.\n")
     (let ((ghostel-enable-url-detection t))
       (ghostel--detect-urls))
     (should (equal "https://example.com/path"              ; url strips trailing dot
@@ -2611,7 +2614,7 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
   ;; File:line detection with absolute path
   (let ((test-file (locate-library "ghostel")))
     (with-temp-buffer
-      (insert (format "Error at %s:42 bad" test-file))
+      (insert (format "Error at %s:42 bad\n" test-file))
       (let ((ghostel-enable-url-detection t))
         (ghostel--detect-urls))
       (let ((he (get-text-property 10 'help-echo)))
@@ -2619,13 +2622,13 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
         (should (and he (string-suffix-p ":42" he)))))     ; file:line contains line number
     ;; File:line for non-existent file produces no link
     (with-temp-buffer
-      (insert "Error at /no/such/file.el:10 bad")
+      (insert "Error at /no/such/file.el:10 bad\n")
       (let ((ghostel-enable-url-detection t))
         (ghostel--detect-urls))
       (should (null (get-text-property 10 'help-echo))))   ; nonexistent file: no help-echo
     ;; File detection disabled
     (with-temp-buffer
-      (insert (format "Error at %s:42 bad" test-file))
+      (insert (format "Error at %s:42 bad\n" test-file))
       (let ((ghostel-enable-url-detection t)
             (ghostel-enable-file-detection nil))
         (ghostel--detect-urls))
@@ -2695,7 +2698,7 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
              (tilde-file (expand-file-name ".emacs.d/init.el" (expand-file-name "~"))))
         ;; Existing tilde path is linkified.
         (with-temp-buffer
-          (insert (format "Error at %s bad" tilde-path))
+          (insert (format "Error at %s bad\n" tilde-path))
           (cl-letf (((symbol-function 'file-exists-p)
                      (lambda (f) (equal f tilde-file))))
             (let ((ghostel-enable-url-detection t))
@@ -2765,15 +2768,15 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
 (ert-deftest ghostel-test-detect-urls-skips-active-input ()
   "Link detection rules around prompts and user input (issue #199).
 - `ghostel-prompt' (shell-generated decoration): never linkified.
-- `ghostel-input' on the cursor's line (active typing): not linkified —
-  in tty Emacs RET on a linkified cell hijacks the keystroke.
-- `ghostel-input' on other lines (historical typed commands): still
-  linkified, so users can follow paths in past commands.
-- Output (no marker): always linkified."
+- The cursor's line (active typing): not linkified — in tty Emacs RET
+  on a linkified cell hijacks the keystroke, and the cursor-row skip
+  works for both OSC 133 shells and markerless REPLs (Gemini CLI etc).
+- Other lines (historical typed commands, output): linkified, so users
+  can follow paths in past commands and program output."
   (let ((test-file (locate-library "ghostel")))
     ;; History line → both file ref and URL linkified.  Active line
-    ;; (cursor's line) → both skipped.  Same `ghostel-input' coverage
-    ;; on both lines, only the cursor's line is protected.
+    ;; (cursor's line) → both skipped, regardless of whether the cells
+    ;; carry `ghostel-input' or not.
     (with-temp-buffer
       (let ((default-directory (file-name-directory test-file)))
         (insert (format "$ ls %s https://hist.example\n" test-file)) ; line 1: history
@@ -2794,27 +2797,38 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
         (should (null (get-text-property (match-beginning 0) 'help-echo))) ; active file → skipped
         (search-forward "https://live.example")
         (should (null (get-text-property (match-beginning 0) 'help-echo))))) ; active URL → skipped
-    ;; Intra-line partial skip: only the `ghostel-input'-marked span is
-    ;; protected, not the whole active line.  A URL outside the span on
-    ;; the same line still gets linkified.  No trailing newline — cursor
-    ;; stays on the typed line.
+    ;; Cursor-row skip is unconditional: a URL on the cursor's line is
+    ;; not linkified even when no `ghostel-input' marker covers it.  This
+    ;; is what protects RET in REPLs like Gemini CLI or raw shells that
+    ;; emit no OSC 133 sequences.  No trailing newline — cursor stays on
+    ;; the typed line.
     (with-temp-buffer
       (insert "out https://before.example mid https://typed.example tail")
-      (let* ((typed (save-excursion
-                      (goto-char (point-min))
-                      (search-forward "https://typed.example")
-                      (cons (match-beginning 0) (match-end 0)))))
-        (put-text-property (car typed) (cdr typed) 'ghostel-input t))
       (goto-char (point-max))                                           ; cursor on line 1
       (let ((ghostel-enable-url-detection t)
             (ghostel-enable-file-detection nil))
         (ghostel--detect-urls))
       (goto-char (point-min))
       (search-forward "https://before.example")
-      (should (equal "https://before.example"
-                     (get-text-property (match-beginning 0) 'help-echo))) ; outside span → linked
+      (should (null (get-text-property (match-beginning 0) 'help-echo))) ; cursor row → skipped
       (search-forward "https://typed.example")
-      (should (null (get-text-property (match-beginning 0) 'help-echo)))) ; inside span → skipped
+      (should (null (get-text-property (match-beginning 0) 'help-echo)))) ; cursor row → skipped
+    ;; No OSC 133 markers at all (e.g. Gemini CLI prompt or a raw shell):
+    ;; output on previous lines is still linkified, only the cursor row
+    ;; is protected.
+    (with-temp-buffer
+      (insert "history https://past.example\n") ; line 1: previous output
+      (insert "> https://typed.example tail")   ; line 2: REPL prompt with cursor
+      (goto-char (point-max))                   ; cursor on line 2
+      (let ((ghostel-enable-url-detection t)
+            (ghostel-enable-file-detection nil))
+        (ghostel--detect-urls))
+      (goto-char (point-min))
+      (search-forward "https://past.example")
+      (should (equal "https://past.example"
+                     (get-text-property (match-beginning 0) 'help-echo))) ; history → linked
+      (search-forward "https://typed.example")
+      (should (null (get-text-property (match-beginning 0) 'help-echo)))) ; cursor row → skipped
     ;; `ghostel-prompt' (prompt prefix) is never linkified — neither on
     ;; the active line nor in scrollback.  Path appears in the prompt's
     ;; cwd display; output below is plain text and stays linkifiable.
@@ -2885,6 +2899,10 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
                 (should (> timer-delay 0))
                 (should (null timer-repeat))
                 (should timer-fn)
+                ;; Move point off the URL line so the cursor-row skip in
+                ;; `ghostel--detect-urls' doesn't mask the URL when the
+                ;; queued detection runs.
+                (goto-char (point-max))
                 (apply timer-fn timer-args)
                 (should (equal url
                                (get-text-property url-beg 'help-echo)))))))
@@ -2938,6 +2956,10 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
                 (should (null (get-text-property second-beg 'help-echo)))
                 (should (= scheduled-count 1))
                 (should timer-fn)
+                ;; Move point off the URL lines so the cursor-row skip in
+                ;; `ghostel--detect-urls' doesn't mask either URL when the
+                ;; queued detection runs.
+                (goto-char (point-max))
                 (apply timer-fn timer-args)
                 (should (equal first-url
                                (get-text-property first-beg 'help-echo)))
@@ -2953,7 +2975,7 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
                      root)))
     (with-temp-buffer
       (let ((default-directory root))
-        (insert (format "see %s:1 for details" test-file))
+        (insert (format "see %s:1 for details\n" test-file))
         (setq buffer-read-only t)
         (let ((ghostel-enable-url-detection nil)
               (ghostel-enable-file-detection t))

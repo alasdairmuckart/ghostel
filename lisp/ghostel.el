@@ -2096,18 +2096,13 @@ Wraps to `point-max' when no link is found before point."
 (defun ghostel--detect-urls-skip-p (pos active-bounds)
   "Return non-nil if link detection should leave POS alone.
 Skips spans already linkified (any `help-echo'), the shell's prompt
-decoration (`ghostel-prompt' — e.g. the cwd shown in the prompt is
-shell-generated, not content the user pointed at), and the active
-prompt's typed input within ACTIVE-BOUNDS (`ghostel-input').
-ACTIVE-BOUNDS is a (BOL . EOL) cons covering the cursor's line.
-Historical input retains `ghostel-input' from when it was active but
-stays linkifiable because it falls outside ACTIVE-BOUNDS."
+decoration (`ghostel-prompt') and the cursor's current line.
+ACTIVE-BOUNDS is a (BOL . EOL) cons covering the cursor's line."
   (or (get-text-property pos 'help-echo)
       (get-text-property pos 'ghostel-prompt)
       (and active-bounds
            (>= pos (car active-bounds))
-           (<= pos (cdr active-bounds))
-           (get-text-property pos 'ghostel-input))))
+           (<= pos (cdr active-bounds)))))
 
 (defun ghostel--detect-urls (&optional begin end)
   "Scan a buffer region for plain-text URLs and file:line references.
