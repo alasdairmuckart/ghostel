@@ -4184,15 +4184,29 @@ overtaking preceding single-byte self-insert input."
 (defvar-local ghostel--face-cookie nil
   "Cookie from `face-remap-add-relative' for the terminal default face.")
 
+(defvar-local ghostel--face-cookie-fg-bg nil
+  "Cached (FG . BG) pair backing `ghostel--face-cookie'.
+The native render path calls `ghostel--set-buffer-face' on every
+dirty redraw, even when the default colors have not changed.
+`face-remap-remove-relative' / `-add-relative' both call
+`force-mode-line-update' internally, so the unconditional remap
+generated a hundreds-of-Hz FMLU storm that starved the minibuffer
+of redisplay slots.  Comparing against this cache short-circuits
+the no-op case.")
+
 (defun ghostel--set-buffer-face (fg bg)
   "Set the buffer's default face to FG foreground and BG background.
-This ensures terminal text is visible regardless of the Emacs theme."
-  (when ghostel--face-cookie
-    (face-remap-remove-relative ghostel--face-cookie))
-  (setq ghostel--face-cookie
-        (face-remap-add-relative 'default
-                                 :foreground fg
-                                 :background bg)))
+This ensures terminal text is visible regardless of the Emacs theme.
+No-op when FG/BG match the cached values from the previous call."
+  (let ((pair (cons fg bg)))
+    (unless (equal pair ghostel--face-cookie-fg-bg)
+      (when ghostel--face-cookie
+        (face-remap-remove-relative ghostel--face-cookie))
+      (setq ghostel--face-cookie
+            (face-remap-add-relative 'default
+                                     :foreground fg
+                                     :background bg))
+      (setq ghostel--face-cookie-fg-bg pair))))
 
 (defun ghostel--set-title-default (title)
   "Update the buffer name with TITLE from the terminal.
