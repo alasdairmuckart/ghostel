@@ -81,6 +81,7 @@
 
 (require 'ansi-color)
 (require 'cl-lib)
+(require 'comint)
 (require 'compat)
 (require 'project)
 (require 'shell)
@@ -423,13 +424,12 @@ Disabled by default for security: a malicious escape sequence in
 command output could silently overwrite your clipboard."
   :type 'boolean)
 
-(defcustom ghostel-password-prompt-regex
-  "[Pp]ass\\(?:word\\|phrase\\)[^:]*:[ \t]*\\'"
+(defcustom ghostel-password-prompt-regex comint-password-prompt-regexp
   "Regex matched against the cursor row to detect a password prompt.
-Fallback for when `ghostel--pty-password-input-p' returns nil —
-typically remote ssh sessions, or programs that don't flip echo off.
-The default covers `Password:', `[sudo] password for X:', and
-`Enter passphrase for key …:'."
+Used when the libghostty heuristic (canonical mode + echo off via
+`ghostel--pty-password-input-p') can't decide on its own - that is, when
+the local pty's termios was unreadable, or when `ghostel--remote-shell-p'
+indicates a remote shell whose echo state isn't reflected on the local pty."
   :type 'regexp)
 
 (defcustom ghostel-password-prompt-functions
@@ -468,6 +468,13 @@ on the local box and on a remote one:
 
   (add-hook \\='ghostel-password-prompt-functions #\\='my-ghostel-auth-source)"
   :type 'hook)
+
+(defcustom ghostel-detect-password-prompts t
+  "Whether ghostel watches for password prompts and pops `read-passwd'.
+When non-nil (the default), the libghostty heuristic and cursor-row
+regex run after each redraw and `read-passwd' is invoked on a rising
+edge.  See `ghostel--detect-password-prompt'."
+  :type 'boolean)
 
 (defcustom ghostel-notification-function #'ghostel-default-notify
   "Function called for OSC 9 / OSC 777 desktop notifications.
@@ -4246,6 +4253,16 @@ naturally re-arm the detector for follow-on prompts (a second
 `sudo' in a script, a wrong-password retry that prints `Sorry,
 try again.' on a new row).")
 
+(defun ghostel--remote-shell-p ()
+  "Return non-nil when the foreground shell is on a remote host.
+Trusts TRAMP `default-directory': ghostel's OSC 7 handler
+\(`ghostel--update-directory') converts a remote shell's directory report
+into a TRAMP path on `default-directory', so a non-nil `file-remote-p'
+covers both TRAMP-spawned buffers and OSC-7-emitting remote shells."
+  (and default-directory
+       (file-remote-p default-directory)
+       t))
+
 (defun ghostel--cursor-row-text ()
   "Return the text of the row containing the terminal cursor, or nil.
 The text is taken from the buffer (post-redraw), without text
@@ -4264,57 +4281,87 @@ default."
                         (line-beginning-position) (line-end-position)))))
             (and (not (string-empty-p line)) line)))))))
 
+(defun ghostel--probe-password-tty ()
+  "Return non-nil if the foreground tty is in canonical mode with echo off.
+Wraps `ghostel--pty-password-input-p' in the live-process / tty-name
+guards so the rest of the detector doesn't have to repeat them, and so
+tests can stub this single point without arranging a real subprocess."
+  (when-let* (((processp ghostel--process))
+              ((process-live-p ghostel--process))
+              (tty (process-tty-name ghostel--process)))
+    (ghostel--pty-password-input-p tty)))
+
 (defun ghostel--password-prompt-detected-p ()
   "Return non-nil if the foreground program looks like it's reading a password.
-Tries the libghostty heuristic first (canonical mode + echo off via
-`ghostel--pty-password-input-p'), then falls back to matching the
-cursor row against `ghostel-password-prompt-regex'."
-  (or (and (processp ghostel--process)
-           (process-live-p ghostel--process)
-           (when-let* ((tty (process-tty-name ghostel--process)))
-             (ghostel--pty-password-input-p tty)))
-      (when-let* ((row (ghostel--cursor-row-text)))
-        (string-match-p ghostel-password-prompt-regex row))))
+Two arms:
+
+  - libghostty heuristic (`ghostel--probe-password-tty'): the local
+    pty is in canonical mode with echo off.  Catches local sudo, ssh's
+    own password prompt, gpg, etc.
+
+  - cursor-row regex (`ghostel-password-prompt-regex', defaulting to
+    `comint-password-prompt-regexp').  Used only when the libghostty
+    heuristic returns nil AND `ghostel--remote-shell-p' indicates a
+    remote shell - the case where the local pty is in raw mode for ssh
+    forwarding and the remote pty's canonical+!echo isn't visible locally.
+
+Returns nil on miss, or a symbol naming the arm on hit (`zig' or`regex')."
+  (cond
+   ((ghostel--probe-password-tty) 'zig)
+   ((and (ghostel--remote-shell-p)
+         (ghostel--password-regex-matches-cursor-row-p))
+    'regex)))
+
+(defun ghostel--password-regex-matches-cursor-row-p ()
+  "Return non-nil if the cursor row looks like a password prompt.
+Matches `ghostel-password-prompt-regex' against the cursor row.
+Matching is case-insensitive, mirroring `comint-watch-for-password-prompt'."
+  (when-let* ((row (ghostel--cursor-row-text))
+              (case-fold-search t))
+    (string-match-p ghostel-password-prompt-regex row)))
 
 (defun ghostel--detect-password-prompt ()
   "Update `ghostel--password-mode-p' and run hook on rising edge.
 Called from `ghostel--delayed-redraw' once the buffer reflects
-the latest output.  Suppresses re-fires while the cursor is
-still on the row where the previous handler returned (see
-`ghostel--password-handled-cursor')."
-  (let ((now (ghostel--password-prompt-detected-p))
-        (cursor (and ghostel--term
-                     (ignore-errors (ghostel--cursor-position ghostel--term)))))
-    (cond
-     ;; Echo back on — clear all state so a future prompt re-arms.
-     ((not now)
-      (when (or ghostel--password-mode-p ghostel--password-handled-cursor)
-        (setq ghostel--password-mode-p nil
+the latest output.  No-op when `ghostel-detect-password-prompts'
+is nil (e.g. ghostel-compile buffers, which run the pty in
+`canonical+!echo' on purpose).  Suppresses re-fires while the
+cursor is still on the row where the previous handler returned
+\(see `ghostel--password-handled-cursor')."
+  (when ghostel-detect-password-prompts
+    (let ((now (ghostel--password-prompt-detected-p))
+          (cursor (and ghostel--term
+                       (ignore-errors (ghostel--cursor-position ghostel--term)))))
+      (cond
+       ;; Echo back on — clear all state so a future prompt re-arms.
+       ((not now)
+        (when (or ghostel--password-mode-p ghostel--password-handled-cursor)
+          (setq ghostel--password-mode-p nil
+                ghostel--password-handled-cursor nil)
+          (ghostel--mode-line-refresh)))
+       ;; Already showing the indicator (handler is in flight).
+       (ghostel--password-mode-p nil)
+       ;; Just-handled prompt — wait for the cursor to move off the row.
+       ((and ghostel--password-handled-cursor
+             cursor
+             (equal cursor ghostel--password-handled-cursor))
+        nil)
+       ;; Rising edge: a fresh prompt or a retry on a new row.
+       (t
+        (setq ghostel--password-mode-p t
               ghostel--password-handled-cursor nil)
-        (ghostel--mode-line-refresh)))
-     ;; Already showing the indicator (handler is in flight).
-     (ghostel--password-mode-p nil)
-     ;; Just-handled prompt — wait for the cursor to move off the row.
-     ((and ghostel--password-handled-cursor
-           cursor
-           (equal cursor ghostel--password-handled-cursor))
-      nil)
-     ;; Rising edge: a fresh prompt or a retry on a new row.
-     (t
-      (setq ghostel--password-mode-p t
-            ghostel--password-handled-cursor nil)
-      (ghostel--mode-line-refresh)
-      ;; Defer so the prompt minibuffer doesn't open from inside the
-      ;; process filter — opening it there blocks further PTY output
-      ;; until the user submits.
-      (let ((buf (current-buffer)))
-        (run-at-time
-         0 nil
-         (lambda ()
-           (when (buffer-live-p buf)
-             (with-current-buffer buf
-               (when ghostel--password-mode-p
-                 (ghostel--prompt-password)))))))))))
+        (ghostel--mode-line-refresh)
+        ;; Defer so the prompt minibuffer doesn't open from inside the
+        ;; process filter — opening it there blocks further PTY output
+        ;; until the user submits.
+        (let ((buf (current-buffer)))
+          (run-at-time
+           0 nil
+           (lambda ()
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+                 (when ghostel--password-mode-p
+                   (ghostel--prompt-password))))))))))))
 
 (defun ghostel--default-password-source (row)
   "Default password source: prompt with `read-passwd'.

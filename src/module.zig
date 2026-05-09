@@ -54,7 +54,7 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
     env.bindFunction("ghostel--enable-vt-log", 0, 0, &fnEnableVtLog, "Enable libghostty internal log routing to *ghostel-debug*.\n\n(ghostel--enable-vt-log)");
     env.bindFunction("ghostel--disable-vt-log", 0, 0, &fnDisableVtLog, "Disable libghostty internal log routing.\n\n(ghostel--disable-vt-log)");
     env.bindFunction("ghostel--native-uri-at", 3, 3, &fnUriAt, "Get URI at ROW-from-bottom and COL.\n\n(ghostel--native-uri-at TERM ROW COL)");
-    env.bindFunction("ghostel--pty-password-input-p", 1, 1, &fnPtyPasswordInputP, "Return t if the tty at PATH is in canonical mode with echo off.\n\nThis mirrors libghostty's password-input heuristic.  Returns nil when the path can't be opened or isn't a tty.\n\n(ghostel--pty-password-input-p PATH)");
+    env.bindFunction("ghostel--pty-password-input-p", 1, 1, &fnPtyPasswordInputP, "Return t if the tty at PATH is in canonical mode with echo off.\n\nThis mirrors libghostty's password-input heuristic.  Returns nil when the path can't be opened, `tcgetattr' fails, or the tty is in some other state.\n\n(ghostel--pty-password-input-p PATH)");
 
     emacs.initSymbols(env);
 

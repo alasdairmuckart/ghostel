@@ -3818,10 +3818,10 @@ exactly what `ghostel--spawn-pty' does at startup."
                "/tmp/ghostel-test-does-not-exist-7c4af2")))
 
 (ert-deftest ghostel-test-password-detect-regex-fallback ()
-  "When the libghostty heuristic returns nil, the regex fallback fires.
+  "Regex fallback fires when heuristic returns nil and we're in a remote shell.
 Feeds a `[sudo] password for ...:' prompt into the terminal, asserts
-`ghostel--password-prompt-detected-p' returns t with the heuristic
-stubbed to nil."
+`ghostel--password-prompt-detected-p' returns non-nil with the heuristic
+stubbed nil and `ghostel--remote-shell-p' stubbed t."
   (let ((buf (generate-new-buffer " *ghostel-test-pwd-regex*")))
     (unwind-protect
         (with-current-buffer buf
@@ -3831,13 +3831,15 @@ stubbed to nil."
           (ghostel--write-input ghostel--term "[sudo] password for alice: ")
           (let ((inhibit-read-only t))
             (ghostel--redraw ghostel--term t))
-          (cl-letf (((symbol-function 'ghostel--pty-password-input-p)
-                     (lambda (_path) nil)))
-            (should (ghostel--password-prompt-detected-p))))
+          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
+                     (lambda () nil))
+                    ((symbol-function 'ghostel--remote-shell-p)
+                     (lambda () t)))
+            (should (eq (ghostel--password-prompt-detected-p) 'regex))))
       (when (buffer-live-p buf) (kill-buffer buf)))))
 
 (ert-deftest ghostel-test-password-detect-regex-no-false-positive ()
-  "Cursor row that doesn't match any regex returns nil from the fallback."
+  "Cursor row that doesn't match the regex returns nil from the fallback."
   (let ((buf (generate-new-buffer " *ghostel-test-pwd-no-match*")))
     (unwind-protect
         (with-current-buffer buf
@@ -3847,9 +3849,84 @@ stubbed to nil."
           (ghostel--write-input ghostel--term "$ ls -la")
           (let ((inhibit-read-only t))
             (ghostel--redraw ghostel--term t))
-          (cl-letf (((symbol-function 'ghostel--pty-password-input-p)
-                     (lambda (_path) nil)))
+          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
+                     (lambda () nil))
+                    ((symbol-function 'ghostel--remote-shell-p)
+                     (lambda () t)))
             (should-not (ghostel--password-prompt-detected-p))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-password-detect-skips-regex-on-local ()
+  "Regex fallback is suppressed when the heuristic returns nil locally.
+Local pty with echo on (the common idle state) must not trigger the
+regex fallback even when the cursor row happens to end in `Password:'.
+This is the core fix for spurious `read-passwd' prompts: typing `echo
+Password:' at a local shell prompt should be inert."
+  (let ((buf (generate-new-buffer " *ghostel-test-pwd-skips*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq ghostel--term (ghostel--new 5 80 1000))
+          (setq ghostel--term-rows 5)
+          ;; A row that DOES match the regex.
+          (ghostel--write-input ghostel--term "[sudo] password for alice: ")
+          (let ((inhibit-read-only t))
+            (ghostel--redraw ghostel--term t))
+          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
+                     (lambda () nil))
+                    ((symbol-function 'ghostel--remote-shell-p)
+                     (lambda () nil)))
+            (should-not (ghostel--password-prompt-detected-p))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-password-detect-rejects-shell-typed-input ()
+  "Cursor rows that look like a typed shell command are rejected.
+The default regex (`comint-password-prompt-regexp') anchors structurally:
+the password word must appear at the start of the row or after a curated
+trigger word (`Enter', `[sudo]', `doas', etc.).  A row like
+`daniel@host:~/work$ echo Password:' has neither anchor, so it does NOT
+match — even though it ends in `Password:' — and a spurious
+`read-passwd' prompt is avoided.  Stubs `ghostel--remote-shell-p' to t
+so the regex arm is even reachable."
+  (let ((buf (generate-new-buffer " *ghostel-test-pwd-shellctx*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq ghostel--term (ghostel--new 5 80 1000))
+          (setq ghostel--term-rows 5)
+          (ghostel--write-input ghostel--term
+                                "daniel@host:~/work$ echo Password:")
+          (let ((inhibit-read-only t))
+            (ghostel--redraw ghostel--term t))
+          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
+                     (lambda () nil))
+                    ((symbol-function 'ghostel--remote-shell-p)
+                     (lambda () t)))
+            (should-not (ghostel--password-prompt-detected-p))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-password-detect-source-symbols ()
+  "`ghostel--password-prompt-detected-p' reports which arm fired.
+Returning a symbol (`zig' or `regex') instead of a bare t lets
+diagnostic tooling (e.g. `ghostel-debug-start') record exactly which
+detection arm misfired when investigating a spurious prompt."
+  (let ((buf (generate-new-buffer " *ghostel-test-pwd-source*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq ghostel--term (ghostel--new 5 80 1000))
+          (setq ghostel--term-rows 5)
+          (ghostel--write-input ghostel--term "[sudo] password for alice: ")
+          (let ((inhibit-read-only t))
+            (ghostel--redraw ghostel--term t))
+          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
+                     (lambda () t)))
+            (should (eq (ghostel--password-prompt-detected-p) 'zig)))
+          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
+                     (lambda () nil))
+                    ((symbol-function 'ghostel--remote-shell-p)
+                     (lambda () t)))
+            (should (eq (ghostel--password-prompt-detected-p) 'regex))))
       (when (buffer-live-p buf) (kill-buffer buf)))))
 
 (ert-deftest ghostel-test-prompt-password-sends-via-subprocess ()

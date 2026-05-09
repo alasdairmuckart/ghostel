@@ -11,8 +11,10 @@ const std = @import("std");
 /// disabled — the heuristic libghostty uses to decide that the
 /// foreground program is reading a password (`stty -echo` is what
 /// `getpass(3)`, `sudo`, `ssh`, `gpg`, etc. all do).  Returns false
-/// when the path can't be opened or stat'd as a tty; callers treat
-/// that as "unknown, try the regex fallback".
+/// when the path can't be opened, `tcgetattr` fails, or the tty is in
+/// some other state (echo on, raw mode under ssh, etc.); callers
+/// fall back to a content-based heuristic when their context warrants
+/// it (see `ghostel--password-prompt-detected-p').
 ///
 /// `O_NOCTTY` keeps the open from making this fd our controlling tty,
 /// and `O_NONBLOCK` keeps it from blocking on a tty that hasn't seen

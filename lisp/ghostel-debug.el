@@ -39,6 +39,11 @@
 (declare-function ghostel--encode-key "ghostel-module")
 (declare-function ghostel--new "ghostel-module")
 (declare-function ghostel--raw-key-sequence "ghostel")
+(declare-function ghostel--cursor-row-text "ghostel")
+(declare-function ghostel--remote-shell-p "ghostel")
+(declare-function ghostel--password-prompt-detected-p "ghostel")
+(declare-function ghostel--cursor-position "ghostel-module" (term))
+(defvar ghostel--password-mode-p)
 
 ;; Forward declarations for TRAMP symbols read by `ghostel-debug-info'
 ;; that don't exist on every supported Emacs.  The actual reads are
@@ -99,6 +104,105 @@ is visible in the timeline.")
 (defconst ghostel-debug--send-cap 64
   "Soft cap (entries) on `ghostel-debug--spawn-capture' :send-keys.")
 
+(defconst ghostel-debug--password-events-cap 32
+  "Maximum number of password-detection rising-edge events kept in memory.
+Older entries are dropped FIFO when the ring is full.")
+
+(defvar ghostel-debug--password-events nil
+  "Ring of recent password-prompt rising edges across all ghostel buffers.
+Each entry is a plist:
+  :time          (current-time)
+  :buffer        ghostel buffer (may have been killed)
+  :buffer-name   string snapshot
+  :source        symbol — `zig', `regex-remote', `regex-unknown', or
+                 nil if the underlying signal vanished by the time the
+                 advice re-probed (still useful: indicates a transient)
+  :cursor        (COL . ROW) at the moment of the fire, or nil
+  :row-text      cursor row text, or nil
+  :tty           value of `process-tty-name', or nil
+  :default-dir   `default-directory' at fire time
+  :remote-p      `ghostel--remote-shell-p' result
+
+Populated by `ghostel-debug--log-password-edge', which is added as
+:around advice on `ghostel--detect-password-prompt' by
+`ghostel-debug-start' and removed by `ghostel-debug-stop'.  Inspect
+with `ghostel-debug-password-events-show'.")
+
+(defun ghostel-debug--log-password-edge (orig &rest args)
+  "Around-advice on `ghostel--detect-password-prompt' that records rising edges.
+Called only while `ghostel-debug-start' has installed it.  Wraps ORIG
+\(the unadvised `ghostel--detect-password-prompt') with ARGS, observes
+the `ghostel--password-mode-p' transition from nil to t, and on a fresh
+rising edge pushes a snapshot onto `ghostel-debug--password-events'.
+
+The source attribution (`zig' / `regex-remote' / `regex-unknown') is
+recovered by re-running the probe after the call.  Termios may have
+changed in the microseconds between the original detection and the
+re-probe, so a nil source on a logged event means the rising edge
+fired but the underlying signal vanished by the time we looked again
+\(itself a useful clue when investigating spurious fires)."
+  (let ((was-on ghostel--password-mode-p))
+    (apply orig args)
+    (when (and (not was-on) ghostel--password-mode-p)
+      (let ((event (list :time (current-time)
+                         :buffer (current-buffer)
+                         :buffer-name (buffer-name)
+                         :source (ghostel--password-prompt-detected-p)
+                         :cursor (and ghostel--term
+                                      (ignore-errors
+                                        (ghostel--cursor-position
+                                         ghostel--term)))
+                         :row-text (ghostel--cursor-row-text)
+                         :tty (and ghostel--process
+                                   (process-tty-name ghostel--process))
+                         :default-dir default-directory
+                         :remote-p (ghostel--remote-shell-p))))
+        (push event ghostel-debug--password-events)
+        (when (> (length ghostel-debug--password-events)
+                 ghostel-debug--password-events-cap)
+          (setq ghostel-debug--password-events
+                (cl-subseq ghostel-debug--password-events
+                           0 ghostel-debug--password-events-cap)))))))
+
+;;;###autoload
+(defun ghostel-debug-password-events-show ()
+  "Display recent password-prompt rising edges.
+Shows every fire of `ghostel--detect-password-prompt' along with the
+arm that triggered it (libghostty heuristic / regex on remote / regex
+on unobservable tty), the cursor row text at the moment, and the
+buffer's remote-shell state.  Use this to diagnose spurious
+`read-passwd' prompts: the entry that opened the unwanted minibuffer
+will identify which detection arm misfired."
+  (interactive)
+  (let ((out (get-buffer-create "*ghostel-debug-password*")))
+    (with-current-buffer out
+      (let ((inhibit-read-only t))
+        (fundamental-mode)
+        (erase-buffer)
+        (insert "=== Recent password-prompt rising edges ===\n")
+        (insert (format "(most recent first; cap = %d)\n\n"
+                        ghostel-debug--password-events-cap))
+        (if (null ghostel-debug--password-events)
+            (insert "No events captured yet.\n")
+          (dolist (ev ghostel-debug--password-events)
+            (insert (format "[%s] buffer=%S source=%s\n"
+                            (format-time-string "%F %T.%3N"
+                                                (plist-get ev :time))
+                            (plist-get ev :buffer-name)
+                            (plist-get ev :source)))
+            (insert (format "  cursor=%S  remote-p=%s  tty=%S\n"
+                            (plist-get ev :cursor)
+                            (if (plist-get ev :remote-p) "yes" "no")
+                            (plist-get ev :tty)))
+            (insert (format "  default-directory=%S\n"
+                            (plist-get ev :default-dir)))
+            (insert (format "  row-text=%S\n\n"
+                            (plist-get ev :row-text)))))
+        (goto-char (point-min)))
+      (special-mode))
+    (display-buffer out)
+    (message "Password-event log in *ghostel-debug-password*")))
+
 ;;;###autoload
 (defun ghostel-debug-start ()
   "Start logging ghostel events to *ghostel-debug* buffer.
@@ -121,6 +225,11 @@ Logs filter calls, key sends, resize events, redraw decisions
   (advice-add 'ghostel--delayed-redraw :around #'ghostel-debug--log-redraw)
   (advice-add 'ghostel--window-adjust-process-window-size
               :around #'ghostel-debug--log-resize)
+  ;; Password-prompt rising edges (events stored in
+  ;; `ghostel-debug--password-events', viewable via
+  ;; `ghostel-debug-password-events-show').
+  (advice-add 'ghostel--detect-password-prompt :around
+              #'ghostel-debug--log-password-edge)
   (when (fboundp 'ghostel--enable-vt-log)
     (ghostel--enable-vt-log))
   (message "ghostel-debug: logging started, check *ghostel-debug* buffer"))
@@ -134,6 +243,8 @@ Logs filter calls, key sends, resize events, redraw decisions
   (advice-remove 'ghostel--delayed-redraw #'ghostel-debug--log-redraw)
   (advice-remove 'ghostel--window-adjust-process-window-size
                  #'ghostel-debug--log-resize)
+  (advice-remove 'ghostel--detect-password-prompt
+                 #'ghostel-debug--log-password-edge)
   (when (fboundp 'ghostel--disable-vt-log)
     (ghostel--disable-vt-log))
   ;; Logging is done — flip the buffer to read-only so the captured log

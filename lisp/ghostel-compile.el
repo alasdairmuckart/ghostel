@@ -643,6 +643,12 @@ resize hooks
       ;; Disable OSC 2 title tracking so a compile command's title
       ;; sequence can't rename the buffer mid-run.
       (setq-local ghostel-set-title-function nil)
+      ;; Disable password-prompt detection: `ghostel-compile--stty-flags'
+      ;; runs the pty in `canonical+!echo' so the compile command isn't
+      ;; double-echoed, but that's exactly the state libghostty's
+      ;; password heuristic looks for - leaving detection on would pop
+      ;; a `read-passwd' minibuffer at the start of every compile.
+      (setq-local ghostel-detect-password-prompts nil)
       (setq ghostel--term (ghostel--new height width ghostel-max-scrollback))
       (setq ghostel--term-rows height)
       (ghostel--apply-palette ghostel--term)

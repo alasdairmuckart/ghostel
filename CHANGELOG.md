@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- Spurious `read-passwd` minibuffer prompts when the terminal cursor
+  row happened to end in `Password:` / `passphrase:` — typing
+  `echo Password:` at a local shell prompt would pop a password
+  prompt because the regex fallback ran unconditionally whenever
+  the libghostty heuristic returned nil, and the regex itself was
+  anchored only at end-of-line.  The fallback regex now defaults to
+  `comint-password-prompt-regexp` — the same regex `M-x shell` and
+  `M-x term` use — which structurally requires the password word at
+  start-of-line or after a curated trigger word, so a row like
+  `$ echo Password:` is correctly ignored.  The fallback also runs
+  only when `ghostel--remote-shell-p` indicates a remote shell, so
+  local raw-mode TUIs (vim, less, htop) don't risk false positives
+  from coincidental cursor-row content.  Fixes
+  [#244](https://github.com/dakra/ghostel/issues/244).
+
+### Added
+- `ghostel-detect-password-prompts` — defcustom (default t) gating
+  the entire detector.  ghostel-compile binds it to nil
+  buffer-locally because compile buffers run with `stty -echo' to
+  avoid double-echoing the command, which puts the pty into the
+  exact `canonical+!echo' state that the libghostty heuristic
+  matches — leaving detection on would pop a `read-passwd'
+  minibuffer at the start of every compile.
+- `M-x ghostel-debug-password-events-show` — view the last 32
+  password-prompt rising edges with the detection arm that fired
+  (`zig` or `regex`), the cursor row text, and the buffer's
+  remote-shell state.  Capture is enabled by
+  `M-x ghostel-debug-start` (which installs the advice; the events
+  buffer survives `ghostel-debug-stop`).
+
+### Changed
+- `ghostel-password-prompt-regex` now defaults to
+  `comint-password-prompt-regexp` (the same regex `M-x shell`,
+  `M-x term`, and eshell use).  The previous default
+  (`[Pp]ass\(?:word\|phrase\)[^:]*:[ \t]*\'`) was too permissive
+  and caused the false-positive class above.  Users who want to
+  extend the regex should prefer customizing
+  `comint-password-prompt-regexp` itself (BEFORE loading ghostel)
+  so other Emacs facilities benefit from the same change.
+- `ghostel--password-prompt-detected-p` now returns nil or a
+  symbol (`zig` or `regex`) identifying which arm fired.
+  Truthiness is unchanged for callers that treat the return value
+  as a boolean.
+
 ## [0.23.0] — 2026-05-08
 
 ### Added
