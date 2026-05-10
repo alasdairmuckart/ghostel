@@ -873,6 +873,7 @@ Used when `cursor-in-non-selected-windows' resolves to box.")
 (declare-function ghostel--mouse-event "ghostel-module")
 (declare-function ghostel--new "ghostel-module")
 (declare-function ghostel--redraw "ghostel-module" (term &optional full))
+(declare-function ghostel--set-bold-config "ghostel-module")
 (declare-function ghostel--set-default-colors "ghostel-module")
 (declare-function ghostel--set-palette "ghostel-module")
 (declare-function ghostel--set-size "ghostel-module" (term rows cols &optional cell-w cell-h))
@@ -1233,6 +1234,36 @@ Updated whenever the terminal is created or resized.")
 (defvar-local ghostel--term-cols nil
   "Column count of the native terminal.
 Updated whenever the terminal is created or resized.")
+
+(defcustom ghostel-bold-color nil
+  "Configure how bold text is colored.
+
+If nil (default), bold text uses the same color as normal text.
+
+If `bright', bold text uses the bright version of the current
+foreground color (ANSI colors 0-7 map to 8-15).
+
+If a string (hex color like \"#RRGGBB\"), bold text with the default
+foreground color uses this specific color.  Bold text with a palette
+color (0-7) will use the bright version (8-15).
+
+Matches Ghostty 1.2.0's `bold-color' configuration."
+  :type '(choice (const :tag "None" nil)
+                 (const :tag "Bright" bright)
+                 (string :tag "Fixed color (#RRGGBB)"
+                         :match (lambda (_widget val)
+                                  (and (stringp val)
+                                       (string-match-p
+                                        "\\`#[0-9A-Fa-f]\\{6\\}\\'" val)))))
+  :group 'ghostel
+  :set (lambda (sym val)
+         (set-default sym val)
+         (dolist (buf (buffer-list))
+           (with-current-buffer buf
+             (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
+               (ghostel--apply-bold-config ghostel--term)
+               (let ((inhibit-read-only t))
+                 (ghostel--redraw ghostel--term t)))))))
 
 (defvar-local ghostel--cursor-pos nil
   "The position of the terminal cursor as (COL . ROW) in terminal screen coords.")
@@ -5023,6 +5054,15 @@ Falls back to \"#000000\" if the color cannot be resolved."
               "")))
         (ghostel--set-palette term colors)))))
 
+(defun ghostel--apply-bold-config (term)
+  "Apply `ghostel-bold-color' to terminal handle TERM."
+  (when (user-ptrp term)
+    (ghostel--load-module)
+    (ghostel--set-bold-config
+     term (if (eq ghostel-bold-color 'bright)
+              'bright
+            ghostel-bold-color))))
+
 
 ;;; Theme synchronization
 
@@ -5034,6 +5074,7 @@ Call this after changing the Emacs theme so terminals match."
     (with-current-buffer buf
       (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
         (ghostel--apply-palette ghostel--term)
+        (ghostel--apply-bold-config ghostel--term)
         (when (ghostel--terminal-live-p)
           (setq ghostel--force-next-redraw t)
           (ghostel--delayed-redraw buf))))))
@@ -6363,7 +6404,8 @@ buffer can be found again after title-tracking renames it."
         ;; and the terminal advances the cursor zero rows, leaving the
         ;; next prompt on top of the image.
         (ghostel--set-size-with-cell-dims ghostel--term height width)
-        (ghostel--apply-palette ghostel--term))
+        (ghostel--apply-palette ghostel--term)
+        (ghostel--apply-bold-config ghostel--term))
       (ghostel--start-process))))
 
 (defun ghostel--find-buffer-by-identity (identity)
@@ -6441,6 +6483,7 @@ Signals `user-error' if BUFFER already has a live ghostel process."
         ;; see the matching call in `ghostel--ensure-buffer-state'.
         (ghostel--set-size-with-cell-dims ghostel--term height width)
         (ghostel--apply-palette ghostel--term)
+        (ghostel--apply-bold-config ghostel--term)
         (ghostel--spawn-pty program args height width
                             ghostel--default-stty nil remote-p)))))
 
