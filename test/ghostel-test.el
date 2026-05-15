@@ -1774,6 +1774,62 @@ that collided with a fish-internal local variable, leaking
       (should (equal list-buffers-directory default-directory)))))
 
 ;; -----------------------------------------------------------------------
+;; Test: bash OSC 7 ignores $HOSTNAME (#276)
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-bash-osc7-ignores-env-hostname ()
+  "Bash OSC 7 must report gethostname(2), not $HOSTNAME (#276).
+
+Toolbox/container runtimes export HOSTNAME with a value that
+disagrees with the kernel hostname.  Emacs function `system-name'
+reads gethostname(2); if bash's integration emits $HOSTNAME the
+local-host comparison in `ghostel--update-directory' fails and
+the buffer is misclassified as remote, switching on TRAMP."
+  (skip-unless (executable-find "bash"))
+  ;; The test exercises the bash 4.4+ ${var@P} path.  On bash <4.4
+  ;; (notably macOS /bin/bash 3.2) the integration deliberately falls
+  ;; back to $HOSTNAME - pre-#276 behavior, no regression for those
+  ;; users - so the assertion below would not hold and the test would
+  ;; be testing the wrong invariant.
+  (let ((ver (with-temp-buffer
+               (call-process "bash" nil t nil "-c"
+                             "printf '%s.%s' \"$BASH_VERSINFO\" \"${BASH_VERSINFO[1]}\"")
+               (buffer-string))))
+    (skip-unless
+     (and (string-match "\\`\\([0-9]+\\)\\.\\([0-9]+\\)\\'" ver)
+          (let ((major (string-to-number (match-string 1 ver)))
+                (minor (string-to-number (match-string 2 ver))))
+            (or (> major 4) (and (= major 4) (>= minor 4)))))))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-bash (expand-file-name "etc/shell/ghostel.bash" root)))
+    (skip-unless (file-exists-p shell-bash))
+    (let* ((fake "ghostel-test-fake-host-zzz")
+           (process-environment
+            (append (list (format "HOSTNAME=%s" fake)
+                          "INSIDE_EMACS=ghostel")
+                    process-environment))
+           (probe (format "cd /; source %s; __ghostel_osc7"
+                          shell-bash))
+           (output (with-temp-buffer
+                     (call-process "bash" nil (current-buffer) nil
+                                   "--noprofile" "--norc" "-c" probe)
+                     (buffer-string))))
+      ;; Probe emits: \e]7;file://HOST/\a
+      (should (string-match "\e\\]7;file://\\([^/]*\\)/" output))
+      (let ((emitted (match-string 1 output)))
+        ;; Polluted $HOSTNAME must not appear in the OSC 7 host.
+        (should-not (equal emitted fake))
+        ;; Whatever bash emits must pass the same locality check the elisp side
+        ;; applies in `ghostel--update-directory'.  Asserting the predicate
+        ;; (not strict equality with `system-name') is deliberate: on hosts
+        ;; where (system-name) is an FQDN but \H is the short form (or vice
+        ;; versa) the two strings differ, yet `ghostel--local-host-p' accepts
+        ;; either via its split- on-`.' fallback - which is exactly the
+        ;; production behavior we care about.
+        (should (ghostel--local-host-p emitted))))))
+
+;; -----------------------------------------------------------------------
 ;; Test: OSC 7 end-to-end through libghostty
 ;; -----------------------------------------------------------------------
 
