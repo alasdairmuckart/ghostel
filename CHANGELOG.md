@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `ghostel-query-before-killing` defcustom controls whether Emacs
+  asks for confirmation before killing a live ghostel buffer or
+  exiting Emacs while one is running.  Defaults to `auto`: quiet
+  at the shell prompt, queries while a command is running (via
+  OSC 133 C/D markers).  Set to `t` for always-on confirmation,
+  `nil` to restore the previous never-query behavior.
+  Closes [#288](https://github.com/dakra/ghostel/issues/288).
+
 ## [0.26.0] — 2026-05-13
 
 ### Added

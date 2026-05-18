@@ -4661,6 +4661,79 @@ bind `debug-on-error' to nil."
         (should later-ran)))))                                 ; second hook still fired
 
 ;; -----------------------------------------------------------------------
+;; Test: ghostel-query-before-killing
+;; -----------------------------------------------------------------------
+
+(defmacro ghostel-test--with-cat-process (var &rest body)
+  "Spawn a long-lived `cat' process bound to VAR, run BODY, then clean up.
+The process is killed and the temp buffer destroyed on exit so the
+flag-flip tests don't leak processes between runs."
+  (declare (indent 1))
+  `(let* ((buf (generate-new-buffer " *ghostel-test-query-cat*"))
+          (,var (make-process :name "ghostel-test-cat"
+                              :buffer buf
+                              :command '("cat")
+                              :connection-type 'pipe
+                              :noquery nil)))
+     (unwind-protect (progn ,@body)
+       (when (process-live-p ,var)
+         (delete-process ,var))
+       (kill-buffer buf))))
+
+(ert-deftest ghostel-test-query-before-killing-auto-toggles ()
+  "`auto' flips the query-on-exit flag around OSC 133 C/D markers."
+  (ghostel-test--with-cat-process proc
+    (with-current-buffer (process-buffer proc)
+      (setq ghostel--process proc)
+      (let ((ghostel-query-before-killing 'auto))
+        (set-process-query-on-exit-flag proc nil)              ; baseline
+        (ghostel--query-before-killing-on-cmd-start (current-buffer))
+        (should (process-query-on-exit-flag proc))             ; command running
+        (ghostel--query-before-killing-on-cmd-finish (current-buffer) 0)
+        (should-not (process-query-on-exit-flag proc))))))     ; back at prompt
+
+(ert-deftest ghostel-test-query-before-killing-nil-is-noop ()
+  "When set to nil, the OSC 133 handlers must not touch the flag."
+  (ghostel-test--with-cat-process proc
+    (with-current-buffer (process-buffer proc)
+      (setq ghostel--process proc)
+      (let ((ghostel-query-before-killing nil))
+        (set-process-query-on-exit-flag proc nil)
+        (ghostel--query-before-killing-on-cmd-start (current-buffer))
+        (should-not (process-query-on-exit-flag proc))         ; unchanged
+        (ghostel--query-before-killing-on-cmd-finish (current-buffer) 0)
+        (should-not (process-query-on-exit-flag proc))))))
+
+(ert-deftest ghostel-test-query-before-killing-t-is-noop ()
+  "When set to t, the OSC 133 handlers must not touch the flag.
+The flag is already t from spawn time, and `auto'-only toggling
+would defeat the user's request to always be asked."
+  (ghostel-test--with-cat-process proc
+    (with-current-buffer (process-buffer proc)
+      (setq ghostel--process proc)
+      (let ((ghostel-query-before-killing t))
+        (set-process-query-on-exit-flag proc t)
+        (ghostel--query-before-killing-on-cmd-start (current-buffer))
+        (should (process-query-on-exit-flag proc))             ; still t
+        (ghostel--query-before-killing-on-cmd-finish (current-buffer) 0)
+        (should (process-query-on-exit-flag proc))))))         ; still t after D
+
+(ert-deftest ghostel-test-query-before-killing-handles-dead-process ()
+  "Handlers must not raise if the process has already exited."
+  (ghostel-test--with-cat-process proc
+    (with-current-buffer (process-buffer proc)
+      (setq ghostel--process proc)
+      (delete-process proc)
+      (let ((ghostel-query-before-killing 'auto))
+        (should-not (condition-case _
+                        (progn (ghostel--query-before-killing-on-cmd-start
+                                (current-buffer))
+                               (ghostel--query-before-killing-on-cmd-finish
+                                (current-buffer) 0)
+                               nil)
+                      (error t)))))))
+
+;; -----------------------------------------------------------------------
 ;; Test: ghostel-compile--finalize
 ;; -----------------------------------------------------------------------
 
@@ -15553,6 +15626,10 @@ slip past the unit tests."
     ghostel-test-command-finish-hook-error-isolated
     ghostel-test-command-finish-hook-runs-synchronously
     ghostel-test-command-start-hook-runs-synchronously
+    ghostel-test-query-before-killing-auto-toggles
+    ghostel-test-query-before-killing-nil-is-noop
+    ghostel-test-query-before-killing-t-is-noop
+    ghostel-test-query-before-killing-handles-dead-process
     ghostel-test-compile-finalize-scans-errors
     ghostel-test-compile-finalize-appends-footer
     ghostel-test-compile-finalize-footer-on-failure

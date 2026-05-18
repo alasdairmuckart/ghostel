@@ -364,13 +364,30 @@ The default, `ghostel--set-title-default', renames the buffer to
   "Kill the buffer when the shell process exits."
   :type 'boolean)
 
+(defcustom ghostel-query-before-killing 'auto
+  "Whether to confirm before killing a live ghostel buffer or exiting Emacs.
+
+The value controls the process query-on-exit flag (see
+`set-process-query-on-exit-flag'), which Emacs honours both when
+killing the buffer and when exiting Emacs while the buffer is live.
+
+t      Always query while the shell process is alive.
+nil    Never query.
+auto   Query only while a shell command is running.  Requires OSC 133 shell
+       integration: at a prompt the flag is nil, and it flips to t between
+       the OSC 133 C (command start) and D (command finish) markers."
+  :type '(choice (const :tag "Always" t)
+                 (const :tag "Never" nil)
+                 (const :tag "While a command is running" auto)))
+
 (defcustom ghostel-exit-functions nil
   "Hook run when the terminal process exits.
 Each function is called with two arguments: the buffer and the
 exit event string."
   :type 'hook)
 
-(defcustom ghostel-command-finish-functions nil
+(defcustom ghostel-command-finish-functions
+  '(ghostel--query-before-killing-on-cmd-finish)
   "Hook run when a shell command finishes (OSC 133 D marker).
 Each function is called with two arguments: the buffer and the
 exit status (an integer, or nil if the shell did not report one).
@@ -388,7 +405,8 @@ non-nil, in which case the error is re-signalled so the debugger
 can fire (standard `with-demoted-errors' semantics)."
   :type 'hook)
 
-(defcustom ghostel-command-start-functions nil
+(defcustom ghostel-command-start-functions
+  '(ghostel--query-before-killing-on-cmd-start)
   "Hook run when a shell command starts running (OSC 133 C marker).
 Each function is called with one argument: the buffer.
 
@@ -4510,6 +4528,24 @@ is non-nil so the debugger fires for hook authors who want it."
        (apply fn args))
      nil)))
 
+(defun ghostel--query-before-killing-on-cmd-start (buf)
+  "Flip the process query-on-exit flag on for BUF while a command runs.
+Active only when `ghostel-query-before-killing' is `auto'.
+Hung off `ghostel-command-start-functions'."
+  (when (eq ghostel-query-before-killing 'auto)
+    (let ((proc (buffer-local-value 'ghostel--process buf)))
+      (when (process-live-p proc)
+        (set-process-query-on-exit-flag proc t)))))
+
+(defun ghostel--query-before-killing-on-cmd-finish (buf _exit)
+  "Clear the process query-on-exit flag on BUF when the command finishes.
+Active only when `ghostel-query-before-killing' is `auto'.
+Hung off `ghostel-command-finish-functions'."
+  (when (eq ghostel-query-before-killing 'auto)
+    (let ((proc (buffer-local-value 'ghostel--process buf)))
+      (when (process-live-p proc)
+        (set-process-query-on-exit-flag proc nil)))))
+
 (defun ghostel--prompt-input-start ()
   "From the start of a `ghostel-prompt' region, move past the prefix.
 If `ghostel-input' begins on the same line, point lands at its
@@ -5969,7 +6005,12 @@ matches the PTY window size, and stores the process in
       ;; Set the PTY's actual window size (ioctl TIOCSWINSZ) so that
       ;; the program's line editor (readline/ZLE) can render properly.
       (set-process-window-size proc height width)
-      (set-process-query-on-exit-flag proc nil)
+      ;; For `auto', start nil — we spawn at a fresh prompt.  The
+      ;; OSC 133 C/D handlers flip the flag while a command runs.
+      (set-process-query-on-exit-flag
+       proc (if (eq ghostel-query-before-killing 'auto)
+                nil
+              ghostel-query-before-killing))
       (process-put proc 'adjust-window-size-function
                    #'ghostel--window-adjust-process-window-size)
       proc)))
