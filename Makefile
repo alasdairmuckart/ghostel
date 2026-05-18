@@ -34,11 +34,17 @@ extensions/evil-ghostel/%.elc: extensions/evil-ghostel/%.el | $(EVIL_DIR)
 	$(EMACS) --batch -Q -L "$(EVIL_DIR)" -L lisp -L extensions/evil-ghostel \
 		--eval "(setq byte-compile-error-on-warn t)" -f batch-byte-compile $<
 
+# Per-topic test files. Add new ghostel-*-test.el here so it gets loaded.
+TEST_FILES := $(sort $(wildcard test/ghostel-*-test.el))
+TEST_LOAD := $(addprefix -l ,$(TEST_FILES))
+
 test: $(ELC)
-	$(EMACS) --batch -Q -L lisp -l ert -l test/ghostel-test.el -f ghostel-test-run-elisp
+	$(EMACS) --batch -Q -L lisp -L test -l ert -l test/ghostel-test-helpers.el \
+		$(TEST_LOAD) -f ghostel-test-run-elisp
 
 test-native: build $(ELC)
-	$(EMACS) --batch -Q -L lisp -l ert -l test/ghostel-test.el -f ghostel-test-run-native
+	$(EMACS) --batch -Q -L lisp -L test -l ert -l test/ghostel-test-helpers.el \
+		$(TEST_LOAD) -f ghostel-test-run-native
 
 test-all: test test-zig test-native
 
@@ -64,7 +70,8 @@ checkdoc:
 		              (checkdoc-proper-noun-list nil) \
 		              (checkdoc-verb-check-experimental-flag nil) \
 		              (ok t)) \
-		  (dolist (f '(\"lisp/ghostel.el\" \"lisp/ghostel-debug.el\" \"lisp/ghostel-compile.el\" \"lisp/ghostel-eshell.el\" \"extensions/evil-ghostel/evil-ghostel.el\" \"test/ghostel-test.el\")) \
+		  (dolist (f (append '(\"lisp/ghostel.el\" \"lisp/ghostel-debug.el\" \"lisp/ghostel-compile.el\" \"lisp/ghostel-eshell.el\" \"extensions/evil-ghostel/evil-ghostel.el\" \"test/ghostel-test-helpers.el\") \
+		                     (file-expand-wildcards \"test/ghostel-*-test.el\"))) \
 		    (ignore-errors (kill-buffer \"*Warnings*\")) \
 		    (let ((inhibit-message t)) \
 		      (checkdoc-file f)) \

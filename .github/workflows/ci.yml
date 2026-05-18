@@ -92,9 +92,10 @@ jobs:
 
       - name: Run pure Elisp tests
         run: |
-          emacs --batch -Q -L /tmp/compat -L lisp \
+          emacs --batch -Q -L /tmp/compat -L lisp -L test \
             -l ert \
-            -l test/ghostel-test.el \
+            -l test/ghostel-test-helpers.el \
+            $(for f in test/ghostel-*-test.el; do printf -- '-l %s ' "$f"; done) \
             -f ghostel-test-run-elisp
 
   test-evil:
@@ -212,7 +213,8 @@ jobs:
 
       - name: Run native module tests
         run: |
-          emacs --batch -Q -L /tmp/compat -L lisp \
+          emacs --batch -Q -L /tmp/compat -L lisp -L test \
             -l ert \
-            -l test/ghostel-test.el \
+            -l test/ghostel-test-helpers.el \
+            $(for f in test/ghostel-*-test.el; do printf -- '-l %s ' "$f"; done) \
             -f ghostel-test-run-native
