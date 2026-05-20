@@ -424,6 +424,8 @@ const CellProps = struct {
 /// We read this first and if it differs from the previous cell, we read the full
 /// `CellProps`.
 const CellPropKey = struct {
+    // TODO: Style ID type is not exported from ghostty-vt for some reason.
+    //       We should file an issue.
     style_id: ?@FieldType(gt.page.Cell, "style_id"),
     hyperlink: bool,
     prompt: bool,

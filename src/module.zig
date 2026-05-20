@@ -1107,6 +1107,8 @@ fn bellCallback(handler: *gt.TerminalStream.Handler) void {
     _ = env.f("ding", .{});
 }
 
+// TODO: DeviceAttributes is not exported from ghostty-vt for some reason.
+//       We should file an issue.
 const DeviceAttributesFn = @typeInfo(
     @typeInfo(
         @FieldType(gt.TerminalStream.Handler.Effects, "device_attributes"),
