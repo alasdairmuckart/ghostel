@@ -6660,6 +6660,15 @@ PROCESS is the shell process, WINDOWS is the list of windows."
            ((and (eql height ghostel--term-rows)
                  (eql width ghostel--term-cols))
             (setq size nil))
+           ;; Don't resize on minibuffer-induced rows-only change.
+           ;; E.g. fish clears and re-emits its prompt on every SIGWINCH;
+           ;; a `consult-buffer'/`M-x' cycle that grows then shrinks the body
+           ;; would otherwise produce two prompt repaints in quick succession.
+           ;; Skip the deferral on the alt screen TUIs.
+           ((and (active-minibuffer-window)
+                 (eql width ghostel--term-cols)
+                 (not (ghostel--alt-screen-p ghostel--term)))
+            (setq size nil))
            ;; Real resize — update the terminal model and redraw.
            (t
             (ghostel--set-size-with-cell-dims

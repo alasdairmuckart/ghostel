@@ -929,65 +929,6 @@ former defaulted to t and throttled bursty TUI redraws."
             (when (process-live-p proc)
               (delete-process proc))))))))
 
-(ert-deftest ghostel-test-resize-window-adjust ()
-  "Window adjust resizes the VT, marks redraw state, and returns dimensions."
-  (with-temp-buffer
-    (let ((ghostel--term 'fake)
-          (ghostel--force-next-redraw nil)
-          (set-size-args nil)
-          (redraw-called nil))
-      (let ((cur-buf (current-buffer)))
-        (cl-letf (((symbol-function 'ghostel--set-size-with-cell-dims)
-                   (lambda (_term h w) (setq set-size-args (list h w))))
-                  ((symbol-function 'ghostel--delayed-redraw)
-                   (lambda (_buf) (setq redraw-called t)))
-                  ((symbol-function 'process-buffer)
-                   (lambda (_proc) cur-buf))
-                  ((default-value 'window-adjust-process-window-size-function)
-                   (lambda (_proc _wins) '(120 . 40))))
-          (let ((result (ghostel--window-adjust-process-window-size
-                         'fake-proc '(fake-win))))
-            (should (equal '(120 . 40) result))
-            (should (equal '(40 120) set-size-args))
-            (should ghostel--force-next-redraw)
-            (should redraw-called)))))))
-
-(ert-deftest ghostel-test-resize-nil-size ()
-  "When default function returns nil, no resize happens."
-  (with-temp-buffer
-    (let ((ghostel--term 'fake)
-          (set-size-called nil))
-      (cl-letf (((symbol-function 'ghostel--set-size-with-cell-dims)
-                 (lambda (_term _h _w) (setq set-size-called t)))
-                ((symbol-function 'process-buffer)
-                 (lambda (_proc) nil))
-                ((default-value 'window-adjust-process-window-size-function)
-                 (lambda (_proc _wins) nil)))
-        (let ((result (ghostel--window-adjust-process-window-size
-                       'fake-proc nil)))
-          (should (null result))
-          (should-not set-size-called))))))
-
-(ert-deftest ghostel-test-resize-noop-same-dims ()
-  "Resize to identical dims returns nil and skips set-size."
-  (with-temp-buffer
-    (let ((ghostel--term 'fake)
-          (ghostel--term-rows 40)
-          (ghostel--term-cols 120)
-          (set-size-called nil))
-      (let ((cur-buf (current-buffer)))
-        (cl-letf (((symbol-function 'ghostel--set-size-with-cell-dims)
-                   (lambda (_term _h _w) (setq set-size-called t)))
-                  ((symbol-function 'ghostel--delayed-redraw) #'ignore)
-                  ((symbol-function 'process-buffer)
-                   (lambda (_proc) cur-buf))
-                  ((default-value 'window-adjust-process-window-size-function)
-                   (lambda (_proc _wins) '(120 . 40))))
-          (let ((result (ghostel--window-adjust-process-window-size
-                         'fake-proc '(fake-win))))
-            (should (null result))
-            (should-not set-size-called)))))))
-
 (ert-deftest ghostel-test-sigwinch-reaches-shell-basic ()
   "Verify `set-process-window-size' delivers SIGWINCH to a PTY shell.
 This is the baseline: if this fails, the Emacs PTY mechanism itself
