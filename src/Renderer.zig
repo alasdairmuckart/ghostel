@@ -9,8 +9,10 @@ const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
 const GhostelTerm = @import("GhostelTerm.zig");
+const style_face = @import("style_face.zig");
 
-const FixedArrayList = @import("fixed_array_list.zig").FixedArrayList;
+pub const CellProps = style_face.CellProps;
+const formatColor = style_face.formatColor;
 
 const Self = @This();
 
@@ -268,29 +270,6 @@ fn probeCoverage(env: emacs.Env, font: emacs.Value) u32 {
 
 const ViewportSize = struct { cols: u16, rows: u16, cell_w: u32, cell_h: u32 };
 
-/// Blend a foreground color toward a background color to produce a "dim" effect.
-/// Uses ~65% foreground / ~35% background weighting.
-fn dimColor(fg: gt.color.RGB, bg: gt.color.RGB) gt.color.RGB {
-    return .{
-        .r = @intCast((@as(u16, fg.r) * 166 + @as(u16, bg.r) * 90) / 256),
-        .g = @intCast((@as(u16, fg.g) * 166 + @as(u16, bg.g) * 90) / 256),
-        .b = @intCast((@as(u16, fg.b) * 166 + @as(u16, bg.b) * 90) / 256),
-    };
-}
-
-/// Format an RGB color as "#RRGGBB" into a buffer.
-fn formatColor(color: gt.color.RGB, buf: *[7]u8) []const u8 {
-    const hex = "0123456789abcdef";
-    buf[0] = '#';
-    buf[1] = hex[color.r >> 4];
-    buf[2] = hex[color.r & 0xf];
-    buf[3] = hex[color.g >> 4];
-    buf[4] = hex[color.g & 0xf];
-    buf[5] = hex[color.b >> 4];
-    buf[6] = hex[color.b & 0xf];
-    return buf[0..7];
-}
-
 /// Read the style for the current cell from the render state.
 fn readCellProps(self: *Self, cell: *const gt.RenderState.Cell) ?CellProps {
     var props: CellProps = .{};
@@ -309,6 +288,7 @@ fn readCellProps(self: *Self, cell: *const gt.RenderState.Cell) ?CellProps {
     props.faint = style.flags.faint;
     props.underline = style.flags.underline;
     props.strikethrough = style.flags.strikethrough;
+    props.overline = style.flags.overline;
     props.inverse = style.flags.inverse;
     props.underline_color = style.underlineColor(&self.render_state.colors.palette);
     props.hyperlink = cell.raw.hyperlink;
@@ -325,81 +305,11 @@ fn readCellProps(self: *Self, cell: *const gt.RenderState.Cell) ?CellProps {
 fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
     if (start >= end) return;
 
-    var face_props: FixedArrayList(emacs.Value, 32) = .{};
     const start_val = env.makeInteger(start);
     const end_val = env.makeInteger(end);
-
-    var fg_buf: [7]u8 = undefined;
-    var bg_buf: [7]u8 = undefined;
-    var dim_buf: [7]u8 = undefined;
-
-    const effective_fg = if (props.inverse) props.bg else props.fg;
-    const effective_bg = if (props.inverse) props.fg else props.bg;
-
     const s = &emacs.sym;
 
-    if (props.faint) {
-        // Dim text: blend foreground toward background to reduce intensity.
-        // Always set :foreground since we modify the color itself.
-        const dimmed = dimColor(effective_fg, effective_bg);
-        const dim_str = formatColor(dimmed, &dim_buf);
-        try face_props.append(s.@":foreground");
-        try face_props.append(env.makeString(dim_str));
-    } else {
-        const fg_str = formatColor(effective_fg, &fg_buf);
-        try face_props.append(s.@":foreground");
-        try face_props.append(env.makeString(fg_str));
-    }
-
-    {
-        const bg_str = formatColor(effective_bg, &bg_buf);
-        try face_props.append(s.@":background");
-        try face_props.append(env.makeString(bg_str));
-    }
-
-    if (props.bold) {
-        try face_props.append(s.@":weight");
-        try face_props.append(s.bold);
-    }
-
-    if (props.italic) {
-        try face_props.append(s.@":slant");
-        try face_props.append(s.italic);
-    }
-
-    if (props.underline != .none) {
-        try face_props.append(s.@":underline");
-        if (props.underline == .single and props.underline_color == null) {
-            try face_props.append(env.t());
-        } else {
-            var ul_props: FixedArrayList(emacs.Value, 4) = .{};
-
-            try ul_props.append(s.@":style");
-            try ul_props.append(switch (props.underline) {
-                .curly => s.wave,
-                .double => s.@"double-line",
-                .dotted => s.dot,
-                .dashed => s.dash,
-                else => s.line,
-            });
-
-            if (props.underline_color) |uc| {
-                var uc_buf: [7]u8 = undefined;
-                try ul_props.append(s.@":color");
-                try ul_props.append(env.makeString(formatColor(uc, &uc_buf)));
-            }
-
-            try face_props.append(env.funcall(s.list, ul_props.items()));
-        }
-    }
-
-    if (props.strikethrough) {
-        try face_props.append(s.@":strike-through");
-        try face_props.append(env.t());
-    }
-
-    if (face_props.len > 0) {
-        const face = env.funcall(s.list, face_props.items());
+    if (try style_face.buildFacePlist(env, props)) |face| {
         env.putTextProperty(start_val, end_val, "face", face);
     }
 
@@ -415,25 +325,6 @@ fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
         else => {},
     }
 }
-
-/// Properties for a run of cells.
-const CellProps = struct {
-    fg: gt.color.RGB = .{},
-    bg: gt.color.RGB = .{},
-    bold: bool = false,
-    italic: bool = false,
-    faint: bool = false,
-    underline: gt.sgr.Attribute.Underline = .none,
-    underline_color: ?gt.color.RGB = null,
-    strikethrough: bool = false,
-    inverse: bool = false,
-    hyperlink: bool = false,
-    semantic_content: gt.page.Cell.SemanticContent = .output,
-
-    fn isDefault(self: CellProps, default_fg: gt.color.RGB, default_bg: gt.color.RGB) bool {
-        return std.meta.eql(self, .{ .fg = default_fg, .bg = default_bg });
-    }
-};
 
 /// Unique identifier that is cheaper to read and compare relative to `CellProps`.
 /// We read this first and if it differs from the previous cell, we read the full
