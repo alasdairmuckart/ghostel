@@ -267,11 +267,21 @@ const Handler = struct {
 
             // C0 controls — pass through so comint's carriage-motion
             // filter can interpret them.
-            .linefeed => self.appendByte('\n') catch |err| log.warn("LF passthrough failed: {s}", .{@errorName(err)}),
-            .carriage_return => self.appendByte('\r') catch |err| log.warn("CR passthrough failed: {s}", .{@errorName(err)}),
-            .backspace => self.appendByte(0x08) catch |err| log.warn("BS passthrough failed: {s}", .{@errorName(err)}),
-            .horizontal_tab => self.appendByte('\t') catch |err| log.warn("TAB passthrough failed: {s}", .{@errorName(err)}),
-            .bell => self.appendByte(0x07) catch |err| log.warn("BEL passthrough failed: {s}", .{@errorName(err)}),
+            .linefeed => self.appendByte('\n') catch |err| {
+                log.warn("LF passthrough failed: {s}", .{@errorName(err)});
+            },
+            .carriage_return => self.appendByte('\r') catch |err| {
+                log.warn("CR passthrough failed: {s}", .{@errorName(err)});
+            },
+            .backspace => self.appendByte(0x08) catch |err| {
+                log.warn("BS passthrough failed: {s}", .{@errorName(err)});
+            },
+            .horizontal_tab => self.appendByte('\t') catch |err| {
+                log.warn("TAB passthrough failed: {s}", .{@errorName(err)});
+            },
+            .bell => self.appendByte(0x07) catch |err| {
+                log.warn("BEL passthrough failed: {s}", .{@errorName(err)});
+            },
 
             .set_attribute => self.applyAttr(value),
 
@@ -370,9 +380,18 @@ pub fn feed(self: *Self, env: emacs.Env, data: []const u8) !emacs.Value {
         }
         if (run.link_uri) |uri| {
             const uri_val = env.makeString(uri);
-            _ = env.f("put-text-property", .{ start_val, end_val, s.@"help-echo", uri_val, text_val });
-            _ = env.f("put-text-property", .{ start_val, end_val, s.@"mouse-face", s.highlight, text_val });
-            _ = env.f("put-text-property", .{ start_val, end_val, s.keymap, env.symbolValue("ghostel-link-map"), text_val });
+            _ = env.f(
+                "put-text-property",
+                .{ start_val, end_val, s.@"help-echo", uri_val, text_val },
+            );
+            _ = env.f(
+                "put-text-property",
+                .{ start_val, end_val, s.@"mouse-face", s.highlight, text_val },
+            );
+            _ = env.f(
+                "put-text-property",
+                .{ start_val, end_val, s.keymap, env.symbolValue("ghostel-link-map"), text_val },
+            );
         }
     }
 
@@ -433,7 +452,12 @@ pub const emacs_functions = struct {
     }
 
     /// (ghostel--comint-make-state)
-    fn fnComintMakeState(raw_env: emacs.RawEnv, _: isize, _: emacs.FnArgs, _: emacs.FnData) callconv(.c) emacs.Value {
+    fn fnComintMakeState(
+        raw_env: emacs.RawEnv,
+        _: isize,
+        _: emacs.FnArgs,
+        _: emacs.FnData,
+    ) callconv(.c) emacs.Value {
         const env = emacs.Env.init(raw_env.?);
         const filter = Self.create(alloc) catch {
             env.signalError("failed to create comint filter state", .{});
@@ -443,7 +467,12 @@ pub const emacs_functions = struct {
     }
 
     /// (ghostel--comint-filter STATE DATA)
-    fn fnComintFilter(raw_env: emacs.RawEnv, _: isize, args: emacs.FnArgs, _: emacs.FnData) callconv(.c) emacs.Value {
+    fn fnComintFilter(
+        raw_env: emacs.RawEnv,
+        _: isize,
+        args: emacs.FnArgs,
+        _: emacs.FnData,
+    ) callconv(.c) emacs.Value {
         const env = emacs.Env.init(raw_env.?);
         const filter = env.getUserPtr(Self, args[0]) orelse {
             env.signalError("invalid comint filter state", .{});
@@ -467,7 +496,12 @@ pub const emacs_functions = struct {
     }
 
     /// (ghostel--comint-set-palette STATE COLORS-STRING)
-    fn fnComintSetPalette(raw_env: emacs.RawEnv, _: isize, args: emacs.FnArgs, _: emacs.FnData) callconv(.c) emacs.Value {
+    fn fnComintSetPalette(
+        raw_env: emacs.RawEnv,
+        _: isize,
+        args: emacs.FnArgs,
+        _: emacs.FnData,
+    ) callconv(.c) emacs.Value {
         const env = emacs.Env.init(raw_env.?);
         const filter = env.getUserPtr(Self, args[0]) orelse {
             env.signalError("invalid comint filter state", .{});
@@ -500,7 +534,12 @@ pub const emacs_functions = struct {
     }
 
     /// (ghostel--comint-set-default-colors STATE FG-HEX BG-HEX)
-    fn fnComintSetDefaultColors(raw_env: emacs.RawEnv, _: isize, args: emacs.FnArgs, _: emacs.FnData) callconv(.c) emacs.Value {
+    fn fnComintSetDefaultColors(
+        raw_env: emacs.RawEnv,
+        _: isize,
+        args: emacs.FnArgs,
+        _: emacs.FnData,
+    ) callconv(.c) emacs.Value {
         const env = emacs.Env.init(raw_env.?);
         const filter = env.getUserPtr(Self, args[0]) orelse {
             env.signalError("invalid comint filter state", .{});
