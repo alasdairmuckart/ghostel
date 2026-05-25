@@ -241,8 +241,31 @@ fn probeCoverage(env: emacs.Env, font: emacs.Value) u32 {
 
 const ViewportSize = struct { cols: u16, rows: u16, cell_w: u32, cell_h: u32 };
 
+/// Resolve a page-local hyperlink id to a `LinkId` that compares equal
+/// across pages for the same logical OSC 8 link.  `PageEntry.dupe`
+/// preserves `.explicit` byte strings verbatim and `.implicit` counters
+/// as-is, so byte- and numeric-equality both work cross-page.
+///
+/// The `.explicit` slice borrows from `page` memory and is invalidated
+/// by the next `render_state.update`; callers must copy it (e.g. via
+/// `env.makeString`) within the current `insertRow`.
+fn resolveLinkId(page: *const gt.page.Page, local_id: gt.size.HyperlinkCountInt) ?LinkId {
+    if (local_id == 0) return null;
+
+    const entry = page.hyperlink_set.get(page.memory, local_id);
+    return switch (entry.id) {
+        .explicit => |slice| .{ .explicit = slice.slice(page.memory) },
+        .implicit => |v| .{ .implicit = @intCast(v) },
+    };
+}
+
 /// Read the style for the current cell from the render state.
-fn readCellProps(self: *Self, cell: *const gt.RenderState.Cell) ?CellProps {
+fn createCellProps(
+    self: *Self,
+    page: *const gt.Page,
+    key: CellPropKey,
+    cell: *const gt.RenderState.Cell,
+) ?CellProps {
     var props: CellProps = .{};
 
     const style: gt.Style = if (cell.raw.hasStyling()) cell.style else .{};
@@ -262,7 +285,7 @@ fn readCellProps(self: *Self, cell: *const gt.RenderState.Cell) ?CellProps {
     props.overline = style.flags.overline;
     props.inverse = style.flags.inverse;
     props.underline_color = style.underlineColor(&self.render_state.colors.palette);
-    props.hyperlink = cell.raw.hyperlink;
+    props.link_id = resolveLinkId(page, key.hyperlink_id);
     props.semantic_content = cell.raw.semantic_content;
 
     return if (props.isDefault(
@@ -271,25 +294,9 @@ fn readCellProps(self: *Self, cell: *const gt.RenderState.Cell) ?CellProps {
     )) null else props;
 }
 
-/// Resolve a page-local hyperlink id to a `LinkId` that compares equal
-/// across pages for the same logical OSC 8 link.  `PageEntry.dupe`
-/// preserves `.explicit` byte strings verbatim and `.implicit` counters
-/// as-is, so byte- and numeric-equality both work cross-page.
-///
-/// The `.explicit` slice borrows from `page` memory and is invalidated
-/// by the next `render_state.update`; callers must copy it (e.g. via
-/// `env.makeString`) within the current `insertRow`.
-fn resolveLinkId(page: *const gt.page.Page, local_id: gt.size.HyperlinkCountInt) LinkId {
-    const entry = page.hyperlink_set.get(page.memory, local_id);
-    return switch (entry.id) {
-        .explicit => |slice| .{ .explicit = slice.slice(page.memory) },
-        .implicit => |v| .{ .implicit = @intCast(v) },
-    };
-}
-
 /// Apply face properties to a region of the buffer.
 /// Uses (put-text-property START END 'face PLIST).
-fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps, link_id: ?LinkId) !void {
+fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
     if (start >= end) return;
 
     const start_val = env.makeInteger(start);
@@ -300,20 +307,19 @@ fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps, link_id: ?
         env.putTextProperty(start_val, end_val, "face", face);
     }
 
-    if (props.hyperlink) {
+    if (props.link_id) |id| {
         env.putTextProperty(start_val, end_val, "help-echo", s.@"ghostel--native-link-help-echo");
         env.putTextProperty(start_val, end_val, "mouse-face", s.highlight);
         env.putTextProperty(start_val, end_val, "keymap", env.symbolValue("ghostel-link-map"));
-        if (link_id) |id| {
-            // Stored as a string (explicit) or integer (implicit), so elisp `equal' returns true
-            // only when both kind and value match. A user-supplied explicit id like "42" never
-            // collides with an implicit counter of 42.
-            const id_val: emacs.Value = switch (id) {
-                .explicit => |str| env.makeString(str),
-                .implicit => |n| env.makeInteger(@intCast(n)),
-            };
-            env.putTextProperty(start_val, end_val, "ghostel-link-id", id_val);
-        }
+
+        // Stored as a string (explicit) or integer (implicit), so elisp `equal' returns true
+        // only when both kind and value match. A user-supplied explicit id like "42" never
+        // collides with an implicit counter of 42.
+        const id_val: emacs.Value = switch (id) {
+            .explicit => |str| env.makeString(str),
+            .implicit => |n| env.makeInteger(@intCast(n)),
+        };
+        env.putTextProperty(start_val, end_val, "ghostel-link-id", id_val);
     }
 
     switch (props.semantic_content) {
@@ -326,11 +332,6 @@ fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps, link_id: ?
 /// Unique identifier that is cheaper to read and compare relative to `CellProps`.
 /// We read this first and if it differs from the previous cell, we read the full
 /// `CellProps`.
-///
-/// `hyperlink_id` carries the page-local hyperlink id (0 = no hyperlink) so two
-/// adjacent cells pointing to different hyperlinks split into separate runs and
-/// each gets its own `ghostel-link-id` text property.  Page-local is sufficient
-/// because all cells in a single row live on the same page.
 const CellPropKey = packed struct {
     // TODO: Style ID type is not exported from ghostty-vt for some reason.
     //       We should file an issue.
@@ -338,10 +339,13 @@ const CellPropKey = packed struct {
     hyperlink_id: gt.size.HyperlinkCountInt,
     semantic_content: gt.page.Cell.SemanticContent,
 
-    fn fromCell(cell: gt.page.Cell, hyperlink_id: gt.size.HyperlinkCountInt) CellPropKey {
+    fn create(page: *const gt.Page, cell: *const gt.page.Cell) CellPropKey {
         return .{
             .style_id = cell.style_id,
-            .hyperlink_id = hyperlink_id,
+            .hyperlink_id = if (cell.hyperlink)
+                page.lookupHyperlink(cell) orelse 0
+            else
+                0,
             .semantic_content = cell.semantic_content,
         };
     }
@@ -352,7 +356,6 @@ pub const RowContent = struct {
         start_char: usize,
         end_char: usize,
         props: ?CellProps,
-        link_id: ?LinkId,
     };
 
     const CellInfo = struct {
@@ -402,36 +405,22 @@ pub const RowContent = struct {
         var trim_byte_len: usize = 0;
         var trim_char_len: usize = 0;
 
-        // `RenderState.Cell.raw` is a copy; the page-memory cell pointer is
-        // needed for `Page.lookupHyperlink` (which uses offset arithmetic).
         const page = &row.pin.node.data;
-
         var current_prop_key: ?CellPropKey = null;
         var col: usize = 0;
         while (col < row.cells.len) : (col += 1) {
             const cell = row.cells.get(col);
+            const raw_cell = page.getRowAndCell(col, row.pin.y).cell;
             if (cell.raw.wide == .spacer_tail or cell.raw.wide == .spacer_head) continue;
 
-            // Resolve the page-local hyperlink id (0 = no link) so adjacent
-            // cells pointing to *different* hyperlinks split into separate
-            // runs.  Without this, two different links touching would share
-            // one run and one `ghostel-link-id' text property.
-            const hyperlink_id: gt.size.HyperlinkCountInt = if (cell.raw.hyperlink) blk: {
-                const real_cell = page.getRowAndCell(col, row.pin.y).cell;
-                break :blk page.lookupHyperlink(real_cell) orelse 0;
-            } else 0;
-
             // We use a "key" that holds a minimum set of values that are cheap to
-            // read and compare to detect style run breaks. Only when we detect a
-            // break do we read the cell style, which is a more expensive operation
-            // in such a tight loop.
-            const prop_key = CellPropKey.fromCell(cell.raw, hyperlink_id);
+            // compare to detect style run breaks.
+            const prop_key = CellPropKey.create(&row.pin.node.data, raw_cell);
             if (prop_key != current_prop_key) {
                 try self.runs.append(alloc, .{
                     .start_char = self.char_len,
                     .end_char = self.char_len,
-                    .props = readCellProps(renderer, &cell),
-                    .link_id = if (hyperlink_id != 0) resolveLinkId(page, hyperlink_id) else null,
+                    .props = createCellProps(renderer, page, prop_key, &cell),
                 });
                 current_prop_key = prop_key;
             }
@@ -439,23 +428,23 @@ pub const RowContent = struct {
             const byte_start = self.text.items.len;
             const char_start = self.char_len;
 
-            const codepoint: u21 = if (cell.raw.hasText()) cell.raw.codepoint() else ' ';
+            const codepoint: u21 = if (raw_cell.hasText()) raw_cell.codepoint() else ' ';
             try self.appendCodepoints(alloc, &[1]u21{codepoint});
-            if (cell.raw.hasGrapheme()) {
+            if (raw_cell.hasGrapheme()) {
                 try self.appendCodepoints(alloc, cell.grapheme);
             }
 
             // If this is a grapheme cluster, or if the char is not covered by
             // the default font, we register it as needing font glyph adjustment
             // to fit into the monospace grid.
-            if (cell.raw.hasGrapheme() or codepoint >= adjustment_threshold) {
+            if (raw_cell.hasGrapheme() or codepoint >= adjustment_threshold) {
                 try self.adjust_cells.append(alloc, .{
                     .col = @intCast(col),
                     .byte_start = @intCast(byte_start),
                     .byte_end = @intCast(self.text.items.len),
                     .char_start = @intCast(char_start),
                     .char_end = @intCast(self.char_len),
-                    .wide = cell.raw.wide == .wide,
+                    .wide = raw_cell.wide == .wide,
                 });
             }
 
@@ -463,7 +452,7 @@ pub const RowContent = struct {
             last_run.end_char = self.char_len;
 
             // We trim cells that neither have content nor styling
-            if (cell.raw.hasText() or last_run.props != null) {
+            if (raw_cell.hasText() or last_run.props != null) {
                 trim_byte_len = self.text.items.len;
                 trim_char_len = self.char_len;
             }
@@ -618,7 +607,7 @@ fn insertRow(self: *Self, alloc: Allocator, env: emacs.Env, row: *const gt.Rende
         const prop_start = row_start + @as(i64, @intCast(run.start_char));
         const prop_end = row_start + @as(i64, @intCast(run.end_char));
         if (run.props) |props| {
-            try applyProps(env, prop_start, prop_end, props, run.link_id);
+            try applyProps(env, prop_start, prop_end, props);
         }
     }
 

@@ -37,7 +37,7 @@ pub const CellProps = struct {
     strikethrough: bool = false,
     overline: bool = false,
     inverse: bool = false,
-    hyperlink: bool = false,
+    link_id: ?LinkId = null,
     semantic_content: gt.page.Cell.SemanticContent = .output,
 
     /// True if these props match the default style for the given palette
