@@ -1810,6 +1810,8 @@ Input modes (`ghostel-semi-char-mode-map', `ghostel-char-mode-map',
   ;; paste payload to the subprocess instead of letting the default
   ;; `xterm-paste' insert it into the (renderer-owned) buffer.
   "<xterm-paste>"    #'ghostel-xterm-paste
+  ;; Escape codes via C-c prefix
+  "C-c C-]"          #'ghostel-send-telnet-escape
   ;; Terminal control via C-c prefix
   "C-c C-c"          #'ghostel-send-C-c
   "C-c C-z"          #'ghostel-send-C-z
@@ -2270,6 +2272,12 @@ paste rather than character-by-character typed keystrokes."
     (user-error "Must be called from a ghostel buffer"))
   (ghostel--paste-text string))
 
+;;; Escape codes (C-c prefix)
+
+(defun ghostel-send-telnet-escape ()
+  "Send telnet escape \"C-]\" to the terminal."
+  (interactive)
+  (ghostel--send-encoded "]" "ctrl"))
 
 ;;; Terminal control commands (C-c prefix)
 
